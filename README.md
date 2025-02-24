@@ -1,4 +1,4 @@
-# Smart PDF Summarizer
+# Smart PDF Summarizer (Live link: https://pdfsummarizer-adcffa43m5lyffvqvzwrf9.streamlit.app/)
 
 **Smart PDF Summarizer** is a Streamlit web application that lets you upload PDF documents and generate summaries using Google's advanced generative AI. It extracts text from your PDF and provides summaries in various formats, including concise, bullet points, detailed, or executive style, all while allowing you to control the maximum word count.
 
@@ -22,7 +22,7 @@
 ## Installation
 
 1. **Clone the Repository:**
-   git clone https://github.com/yourusername/smart-pdf-summarizer.git
+   git clone https://github.com/Mustafaahmed00/pdf_summarizer.git
    cd smart-pdf-summarizer
 2. **Install Dependencies:Create a requirements.txt file with the following content**
    streamlit
