@@ -3,120 +3,242 @@ import os
 from PyPDF2 import PdfReader
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import PromptTemplate
-from dotenv import load_dotenv
-from langchain_core.documents import Document
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.chains.mapreduce import MapReduceChain
+import time
 
-load_dotenv()
+# Configure Streamlit page
+st.set_page_config(
+    page_title="Smart PDF Summarizer",
+    page_icon="📚",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-def summarize_pdf_langchain_gpt(pdf_file, prompt_option):
-    """
-    Summarizes PDF content using Langchain and Google Gemini model,
-    with pre-defined prompt options.
-    """
-    if pdf_file is not None:
-        pdf_reader = PdfReader(pdf_file)
-        text = ""
-        for page in pdf_reader.pages:
-            text += page.extract_text()
+# Load API key from Streamlit secrets
+os.environ['GOOGLE_API_KEY'] = st.secrets["GOOGLE_API_KEY"]
 
-        if not text.strip():
-            return "Error: No text could be extracted from the PDF"
-
-        llm = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0)
-
-        # Pre-defined prompt templates
-        prompt_templates = {
-            "Concise Summary": """You are a highly skilled summarizer. Your task is to create a concise summary of the provided text. Focus on the main points and key ideas.
-
-            Text to summarize:
-            {text}
-
-            CONCISE SUMMARY:""",
-            
-            "Bullet Points Summary": """You are a skilled information extractor. Your task is to identify and list the main points from the provided text in a bullet-point format.
-
-            Text to analyze:
-            {text}
-
-            BULLET POINTS:""",
-            
-            "Detailed Summary": """You are a comprehensive summarizer. Your task is to create a detailed summary of the provided text, including main points, supporting details, and key findings.
-
-            Text to summarize:
-            {text}
-
-            DETAILED SUMMARY:""",
-            
-            "Specific Summary": """You are an analytical summarizer. Your task is to analyze the provided text and summarize the key arguments, findings, and specific details.
-
-            Text to analyze:
-            {text}
-
-            SPECIFIC SUMMARY:"""
+# Custom CSS
+st.markdown("""
+    <style>
+        .main {
+            padding: 2rem;
         }
+        .stButton>button {
+            width: 100%;
+            border-radius: 10px;
+            height: 3em;
+            background-color: #4CAF50;
+            color: white;
+        }
+        .stButton>button:hover {
+            background-color: #45a049;
+        }
+        .upload-text {
+            text-align: center;
+            padding: 2rem;
+            border: 2px dashed #ccc;
+            border-radius: 10px;
+        }
+        .success-box {
+            padding: 1rem;
+            background-color: #f0f8f0;
+            border-radius: 10px;
+            border-left: 5px solid #4CAF50;
+        }
+        .error-box {
+            padding: 1rem;
+            background-color: #fff0f0;
+            border-radius: 10px;
+            border-left: 5px solid #ff0000;
+        }
+        .stProgress > div > div {
+            background-color: #4CAF50;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
-        # Select prompt template based on user option
-        selected_template = prompt_templates.get(prompt_option, prompt_templates["Concise Summary"])
+# Initialize session state
+if 'history' not in st.session_state:
+    st.session_state.history = []
 
-        # Create prompt with the correct input variable
+# Sidebar configuration
+with st.sidebar:
+    st.title("⚙️ Configuration")
+    
+    # Model parameters
+    temperature = st.slider("Temperature", 0.0, 1.0, 0.0, 0.1,
+                          help="Higher values make the output more creative")
+    
+    # Word limit
+    max_words = st.number_input("Maximum words in summary", 100, 1000, 300)
+    
+    # Clear history button
+    if st.button("Clear History"):
+        st.session_state.history = []
+        st.success("History cleared!")
+
+def process_pdf(pdf_file):
+    try:
+        reader = PdfReader(pdf_file)
+        text = ""
+        total_pages = len(reader.pages)
+        
+        progress_bar = st.progress(0)
+        for i, page in enumerate(reader.pages):
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text
+            progress_bar.progress((i + 1) / total_pages)
+        return text.strip()
+    except Exception as e:
+        st.error(f"Error processing PDF: {str(e)}")
+        return None
+
+def get_prompt_template(prompt_option, max_words):
+    templates = {
+        "Concise Summary": f"""As a professional summarizer, create a clear and concise summary of the following text in no more than {max_words} words.
+Focus on the key points and main ideas.
+
+TEXT:
+{{text}}
+
+CONCISE SUMMARY:""",
+        
+        "Bullet Points Summary": f"""Extract and list the main points from the following text in bullet points.
+Limit the total response to {max_words} words and ensure each point is clear and informative.
+
+TEXT:
+{{text}}
+
+BULLET POINTS:""",
+        
+        "Detailed Summary": f"""Create a comprehensive summary of the following text, including main points,
+supporting details, and key findings. Limit the summary to {max_words} words.
+
+TEXT:
+{{text}}
+
+DETAILED SUMMARY:""",
+        
+        "Executive Summary": f"""Provide an executive summary of the following text, highlighting strategic points,
+key findings, and recommendations. Keep the summary under {max_words} words and maintain a professional tone.
+
+TEXT:
+{{text}}
+
+EXECUTIVE SUMMARY:"""
+    }
+    return templates.get(prompt_option, templates["Concise Summary"])
+
+def check_file_size(file):
+    MAX_SIZE = 10 * 1024 * 1024  # 10MB
+    if file.size > MAX_SIZE:
+        st.error("File size exceeds 10MB limit. Please upload a smaller file.")
+        return False
+    return True
+
+def summarize_text(text, prompt_option, temperature, max_words):
+    try:
+        if not os.getenv('GOOGLE_API_KEY'):
+            st.error("Please enter your Google API Key in the sidebar.")
+            return None
+            
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-pro",
+            temperature=temperature
+        )
+        
         prompt = PromptTemplate(
-            template=selected_template,
+            template=get_prompt_template(prompt_option, max_words),
             input_variables=["text"]
         )
-
-        try:
-            # Create a simple chain
-            chain = prompt | llm
-
-            # Run the chain with the text
-            result = chain.invoke({"text": text})
-            
-            return {"output_text": result.content}
-            
-        except Exception as e:
-            return f"Error during summarization: {str(e)}"
-    return None
+        
+        # Create chain
+        chain = prompt | llm
+        
+        # Run chain
+        result = chain.invoke({"text": text})
+        return result.content
+        
+    except Exception as e:
+        st.error(f"Error during summarization: {str(e)}")
+        return None
 
 def main():
-    st.set_page_config(page_title="PDF Summarizer with Gemini")
-    st.title("PDF Summarizing Tool (Powered by Gemini)")
-    st.write("Upload a PDF and get an AI-generated summary using different styles.")
-    st.divider()
-
+    st.title("📚 Smart PDF Summarizer")
+    st.markdown("---")
+    
     # Summary type selection
     prompt_options = [
         "Concise Summary",
         "Bullet Points Summary",
         "Detailed Summary",
-        "Specific Summary"
+        "Executive Summary"
     ]
-    prompt_option = st.selectbox(
-        "Choose summary style:",
-        prompt_options,
-        help="Select how you want your summary to be formatted"
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        prompt_option = st.selectbox(
+            "Choose summary style:",
+            prompt_options,
+            help="Select how you want your summary to be formatted"
+        )
+    
+    # File upload
+    pdf_file = st.file_uploader(
+        "Upload your PDF Document",
+        type='pdf',
+        help="Maximum file size: 10MB"
     )
-
-    # File uploader
-    pdf = st.file_uploader('Upload your PDF Document', type='pdf')
-
-    if pdf is not None:
+    
+    if pdf_file is not None:
+        if not check_file_size(pdf_file):
+            return
+            
         if st.button("Generate Summary"):
-            with st.spinner(f"Generating {prompt_option.lower()}..."):
-                summary_result = summarize_pdf_langchain_gpt(pdf, prompt_option)
+            if not os.getenv('GOOGLE_API_KEY'):
+                st.error("Please enter your Google API Key in the sidebar first.")
+                return
                 
-                if summary_result:
-                    if isinstance(summary_result, str) and summary_result.startswith("Error"):
-                        st.error(summary_result)
-                    else:
-                        st.success("Summary generated successfully!")
-                        st.header(f"{prompt_option}")
-                        st.write(summary_result["output_text"])
-                else:
-                    st.error("Failed to process the PDF. Please try again.")
+            with st.spinner("Processing your PDF..."):
+                text = process_pdf(pdf_file)
+                
+                if text:
+                    with st.spinner("Generating summary..."):
+                        summary = summarize_text(text, prompt_option, temperature, max_words)
+                        
+                        if summary:
+                            st.session_state.history.append({
+                                'filename': pdf_file.name,
+                                'summary_type': prompt_option,
+                                'summary': summary,
+                                'timestamp': time.strftime("%Y-%m-%d %H:%M:%S")
+                            })
+                            
+                            st.markdown("### 📝 Summary")
+                            st.markdown(f"<div class='success-box'>{summary}</div>",
+                                        unsafe_allow_html=True)
+                            
+                            word_count = len(summary.split())
+                            st.info(f"Word count: {word_count}")
+                            
+                            st.download_button(
+                                "Download Summary",
+                                summary,
+                                file_name=f"summary_{pdf_file.name}.txt",
+                                mime="text/plain"
+                            )
     else:
-        st.info("Please upload a PDF file to begin.")
+        st.markdown(
+            "<div class='upload-text'>📤 Drag and drop your PDF here</div>",
+            unsafe_allow_html=True
+        )
+    
+    if st.session_state.history:
+        st.markdown("### 📚 Previous Summaries")
+        for item in reversed(st.session_state.history):
+            with st.expander(f"{item['filename']} - {item['summary_type']} ({item['timestamp']})"):
+                st.write(item['summary'])
 
 if __name__ == '__main__':
     main()
